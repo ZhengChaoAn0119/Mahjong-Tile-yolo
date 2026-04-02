@@ -11,9 +11,9 @@ import numpy as np
 
 from ultralytics import YOLO
 
-from tile_codec     import MODEL_TO_TILE
-from frame_smoother import FrameSmoother, RawDetection
-from game_state     import GameState
+from .tile_codec     import MODEL_TO_TILE
+from .frame_smoother import FrameSmoother, RawDetection
+from .game_state     import GameState
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 PROJECT_ROOT = Path("E:/project/majsoul_yolo")

@@ -36,9 +36,9 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from ultralytics import YOLO
 
-from mahjong_advisor import ROI_4P, ROI_3P, _gray, CONF_THRESH, IOU_THRESH
-from screen_capture  import ScreenCapture
-from tile_codec      import MODEL_TO_TILE, TILE_NAMES
+from src.mahjong_advisor import ROI_4P, ROI_3P, _gray, CONF_THRESH, IOU_THRESH
+from src.screen_capture  import ScreenCapture
+from src.tile_codec      import MODEL_TO_TILE, TILE_NAMES
 
 # ── Model paths ───────────────────────────────────────────────────────────────
 MODELS = [

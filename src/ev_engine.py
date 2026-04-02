@@ -14,8 +14,8 @@ from __future__ import annotations
 from typing import List, Tuple, Dict
 import numpy as np
 
-from tile_codec   import N_TILES, TILE_NAMES, tile_name
-from mahjong_engine import (
+from .tile_codec   import N_TILES, TILE_NAMES, tile_name
+from .mahjong_engine import (
     shanten, shanten_regular, shanten_chiitoitsu,
     effective_tiles, detect_yaku, calculate_fu, estimate_score
 )
@@ -196,4 +196,69 @@ def compute_discard_ev(
         })
 
     results.sort(key=lambda x: -x["ev"])
+    return results
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Simple EV  (Shanten × winning points — fast, no MC)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def compute_simple_ev(
+    hand34:      np.ndarray,
+    remaining34: np.ndarray,
+    melds,
+    seat_wind:   int,
+    round_wind:  int,
+    dora_tiles:  List[int],
+) -> List[Dict]:
+    """
+    Rank each possible discard by:
+        simple_ev = est_score * eff_count / (shanten_after + 1)
+
+    Much faster than Monte Carlo; suitable for real-time overlay.
+    win_rate is set to 0.0 (not computed).
+    """
+    results  = []
+    is_open  = len(melds) > 0
+    rem_total = int(remaining34.sum())
+
+    seen_types: set = set()
+    for discard_tid in range(N_TILES):
+        if hand34[discard_tid] == 0:
+            continue
+        if discard_tid in seen_types:
+            continue
+        seen_types.add(discard_tid)
+
+        h_after = hand34.copy()
+        h_after[discard_tid] -= 1
+
+        new_shan  = int(shanten(h_after))
+        effs      = effective_tiles(h_after, remaining34)
+        eff_count = sum(c for _, c in effs)
+
+        yaku  = detect_yaku(h_after, melds, False, seat_wind, round_wind, dora_tiles)
+        han   = max(1, sum(h for _, h in yaku if h > 0))
+        fu    = calculate_fu(h_after, melds, -1, False, is_open, seat_wind, round_wind)
+        score = estimate_score(han, fu)
+
+        simple_ev = score * eff_count / (new_shan + 1)
+
+        results.append({
+            "discard_tid":  discard_tid,
+            "discard_name": TILE_NAMES[discard_tid],
+            "shanten":      new_shan,
+            "eff_tiles":    effs,
+            "eff_count":    eff_count,
+            "rem_total":    rem_total,
+            "win_rate":     0.0,
+            "avg_draws":    0.0,
+            "est_score":    score,
+            "ev":           simple_ev,
+            "yaku":         yaku,
+            "han":          han,
+            "fu":           fu,
+        })
+
+    results.sort(key=lambda x: (-x["ev"], -x["eff_count"]))
     return results

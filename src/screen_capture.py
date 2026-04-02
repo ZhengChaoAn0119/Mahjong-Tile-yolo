@@ -9,6 +9,7 @@ Priority chain:
 """
 from __future__ import annotations
 from typing import Optional, Tuple
+import threading
 
 import numpy as np
 import cv2
@@ -29,9 +30,9 @@ class ScreenCapture:
     def __init__(self, prefer_window: bool = True):
         self._prefer_window = prefer_window
         self._hwnd: Optional[int] = None
-        self._sct = None          # mss.mss() instance
         self._mss_ok = False
         self._mode = "pil"        # last-used mode: "mss" | "win32" | "pil"
+        self._tls = threading.local()  # per-thread mss instance
         self._init_mss()
         # Set initial mode to reflect what will actually be used
         if self._mss_ok:
@@ -41,11 +42,17 @@ class ScreenCapture:
 
     def _init_mss(self):
         try:
-            import mss as _mss
-            self._sct = _mss.mss()
+            import mss as _mss   # noqa: F401
             self._mss_ok = True
         except ImportError:
             self._mss_ok = False
+
+    def _get_sct(self):
+        """Return (or create) a thread-local mss instance."""
+        if not hasattr(self._tls, "sct") or self._tls.sct is None:
+            import mss as _mss
+            self._tls.sct = _mss.mss()
+        return self._tls.sct
 
     # ── Window discovery ──────────────────────────────────────────────────────
 
@@ -71,7 +78,10 @@ class ScreenCapture:
 
             win32gui.EnumWindows(_enum, None)
             if found:
-                hwnd, x, y, w, h = found[0]
+                # Prefer the largest window (game browser >> companion panel).
+                # This prevents always-on-top companion windows whose titles also
+                # contain "majsoul" from being chosen over the actual game.
+                hwnd, x, y, w, h = max(found, key=lambda item: item[3] * item[4])
                 self._hwnd = hwnd
                 return (x, y, w, h)
         except Exception:
@@ -101,13 +111,14 @@ class ScreenCapture:
     # ── mss path ──────────────────────────────────────────────────────────────
 
     def _capture_mss(self, rect: Optional[Tuple[int, int, int, int]]) -> np.ndarray:
+        sct = self._get_sct()
         if rect is not None:
             x, y, w, h = rect
             monitor = {"top": y, "left": x, "width": w, "height": h}
         else:
-            monitor = self._sct.monitors[1]   # primary monitor
+            monitor = sct.monitors[1]   # primary monitor
 
-        bgra = np.array(self._sct.grab(monitor), dtype=np.uint8)
+        bgra = np.array(sct.grab(monitor), dtype=np.uint8)
         img = bgra[:, :, :3]   # BGRA → BGR (drop alpha)
         if img.shape[1] != TARGET_W or img.shape[0] != TARGET_H:
             img = cv2.resize(img, (TARGET_W, TARGET_H))

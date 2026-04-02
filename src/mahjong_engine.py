@@ -19,7 +19,13 @@ except ImportError:
         return decorator if args and callable(args[0]) else decorator
     NUMBA_OK = False
 
-from tile_codec import N_TILES, TILE_NAMES, get_suit, is_honour, is_terminal
+from .tile_codec import N_TILES, TILE_NAMES, get_suit, is_honour, is_terminal
+
+# Meld kind constants (must match game_state.py)
+MELD_CHI   = "chi"
+MELD_PON   = "pon"
+MELD_KAN_O = "open_kan"
+MELD_KAN_C = "closed_kan"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Shanten calculation (Numba-accelerated)

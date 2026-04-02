@@ -10,11 +10,11 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Dict
 import numpy as np
 
-from tile_codec import (
+from .tile_codec import (
     N_TILES, TILE_NAMES, TOTAL_TILES, tile_name,
     name_to_tile, model_to_tile, hand_str
 )
-from frame_smoother import ConfirmedTile
+from .frame_smoother import ConfirmedTile
 
 
 # ── Meld representation ───────────────────────────────────────────────────────
@@ -188,6 +188,61 @@ class GameState:
 
     def clear_overrides(self):
         self._manual_overrides.clear()
+
+    # ── Tile count utilities ──────────────────────────────────────────────────
+
+    def tile_totals(self) -> np.ndarray:
+        """Per-tile total usage: hand + melds + discards_seen + dora_indicators."""
+        used = np.zeros(N_TILES, dtype=np.int32)
+        for tid in self._hand:
+            used[tid] += 1
+        for m in self.melds:
+            for tid in m.tiles:
+                used[tid] += 1
+        used += self.discards_seen
+        for ind in self.dora_indicators:
+            used[ind] = min(used[ind] + 1, 4)
+        return used
+
+    def can_add_tile(self, tid: int, count: int = 1) -> bool:
+        """Return True if adding `count` copies of tid keeps total ≤ 4."""
+        return int(self.tile_totals()[tid]) + count <= 4
+
+    # ── Dora editing ──────────────────────────────────────────────────────────
+
+    def remove_dora(self, idx: int) -> None:
+        """Remove dora_indicators[idx] if index is valid."""
+        if 0 <= idx < len(self.dora_indicators):
+            self.dora_indicators.pop(idx)
+
+    # ── Meld editing ──────────────────────────────────────────────────────────
+
+    def add_meld(self, kind: str, tiles: List[int]) -> bool:
+        """Add a meld after validating tile count limits. Returns True on success."""
+        for tid in tiles:
+            # temporarily check without double-counting existing
+            pass
+        # Check each tile won't exceed 4 when added
+        delta = np.zeros(N_TILES, dtype=np.int32)
+        for tid in tiles:
+            delta[tid] += 1
+        totals = self.tile_totals()
+        if np.any(totals + delta > 4):
+            return False
+        self.melds.append(Meld(kind, tiles))
+        return True
+
+    def remove_meld(self, idx: int) -> None:
+        """Remove melds[idx] if index is valid."""
+        if 0 <= idx < len(self.melds):
+            self.melds.pop(idx)
+
+    # ── Discard editing ───────────────────────────────────────────────────────
+
+    def set_discard_count(self, tid: int, count: int) -> None:
+        """Directly set discards_seen[tid] clamped to [0, 4]."""
+        if 0 <= tid < N_TILES:
+            self.discards_seen[tid] = max(0, min(4, count))
 
     # ── Summary ───────────────────────────────────────────────────────────────
     def summary(self) -> str:

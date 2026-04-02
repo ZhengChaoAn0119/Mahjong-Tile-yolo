@@ -22,13 +22,13 @@ from typing import Callable, Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
-from ev_engine      import compute_discard_ev
-from frame_smoother import ConfirmedTile
-from game_state     import GameState
-from mahjong_advisor import MahjongAdvisor, run_detection, ROI_4P
-from mahjong_engine  import effective_tiles, shanten
-from screen_capture  import ScreenCapture
-from tile_codec      import name_to_tile
+from .ev_engine      import compute_simple_ev
+from .frame_smoother import ConfirmedTile
+from .game_state     import GameState
+from .mahjong_advisor import MahjongAdvisor, run_detection, ROI_4P
+from .mahjong_engine  import effective_tiles, shanten
+from .screen_capture  import ScreenCapture
+from .tile_codec      import name_to_tile
 
 PROJECT_ROOT = Path("E:/project/majsoul_yolo")
 
@@ -151,18 +151,20 @@ class AnalysisWorker(threading.Thread):
             if len(state._hand) >= 13:
                 doras = state.dora_tiles()
                 t0 = time.time()
-                ev_results = compute_discard_ev(
+                ev_results = compute_simple_ev(
                     hand34, remaining, state.melds,
-                    state.seat_wind, state.round_wind,
-                    doras, n_sims=n_sims)
+                    state.seat_wind, state.round_wind, doras)
                 dt = time.time() - t0
             else:
                 ev_results, dt = [], 0.0
 
             self._phase2_q.put(Phase2Result(
-                ev_results=ev_results, is_mc=(n_sims > 0), compute_time=dt))
+                ev_results=ev_results, is_mc=False, compute_time=dt))
 
         except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            print(f"[AnalysisWorker] ERROR:\n{tb}")
             self._phase1_q.put(Phase1Result(
                 hand_tiles=[], shanten=99, effective_tiles=[],
                 warnings=[], game_mode="4p",
@@ -224,6 +226,7 @@ class AdvisorController:
                  model_path: Path,
                  on_phase1: Callable[[Phase1Result], None],
                  on_phase2: Callable[[Phase2Result], None],
+                 on_hotkey: Optional[Callable] = None,
                  poll_ms: int = 100):
         self._root      = root
         self._on_phase1 = on_phase1
@@ -243,7 +246,9 @@ class AdvisorController:
         self._worker = AnalysisWorker(
             self._trigger_q, self._phase1_q, self._phase2_q,
             self._capture, model_path)
-        self._hotkey = HotkeyManager(root, self.trigger)
+        # on_hotkey lets the View inject its own trigger (with UI feedback).
+        # Falls back to bare controller.trigger if not provided.
+        self._hotkey = HotkeyManager(root, on_hotkey if on_hotkey else self.trigger)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -314,6 +319,56 @@ class AdvisorController:
 
     def reset_state(self) -> None:
         self._worker.reset_state()
+
+    def remove_dora(self, idx: int) -> None:
+        state = self._worker.state
+        if state:
+            state.remove_dora(idx)
+
+    def add_meld(self, kind: str, tile_names: List[str]) -> bool:
+        state = self._worker.state
+        if state is None:
+            return False
+        try:
+            tiles = [name_to_tile(n) for n in tile_names]
+            return state.add_meld(kind, tiles)
+        except KeyError:
+            return False
+
+    def remove_meld(self, idx: int) -> None:
+        state = self._worker.state
+        if state:
+            state.remove_meld(idx)
+
+    def set_discard_count(self, tile_name_str: str, count: int) -> None:
+        state = self._worker.state
+        if state is None:
+            return
+        try:
+            tid = name_to_tile(tile_name_str)
+            state.set_discard_count(tid, count)
+        except KeyError:
+            pass
+
+    def set_discard_count_by_id(self, tid: int, count: int) -> None:
+        state = self._worker.state
+        if state:
+            state.set_discard_count(tid, count)
+
+    def get_state_snapshot(self) -> dict:
+        """Return a snapshot of current game state for UI display (main thread safe)."""
+        state = self._worker.state
+        if state is None:
+            return {"doras": [], "melds": [], "discards": {}}
+        from .tile_codec import tile_name as _tn
+        return {
+            "doras":    list(state.dora_indicators),
+            "melds":    [(m.kind, list(m.tiles)) for m in state.melds],
+            "discards": {tid: int(state.discards_seen[tid])
+                         for tid in range(34) if state.discards_seen[tid] > 0},
+            "discards_arr": state.discards_seen.copy(),
+            "can_add":  lambda tid: state.can_add_tile(tid),
+        }
 
     # ── Capture / debug ───────────────────────────────────────────────────────
 
