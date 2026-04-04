@@ -119,14 +119,23 @@ class TileImageCache:
             self._chip_photos[tid] = self._ImageTk.PhotoImage(
                 fb.resize((self.CW, self.CH), self._Image.LANCZOS))
         # Overwrite with real crops where available (folder = model class id)
+        from src.tile_codec import MODEL_NAMES as _MNAMES
         for mid in range(len(_M2T)):
             tid    = int(_M2T[mid])
             folder = self._crops_dir / str(mid)
-            files  = sorted(folder.iterdir()) if folder.is_dir() else []
-            if not files:
+            if not folder.is_dir():
                 continue
+            # Prefer the clean reference image {name}.png if present
+            preferred = folder / (_MNAMES[mid] + ".png")
+            if preferred.exists():
+                pick = preferred
+            else:
+                files = sorted(folder.iterdir())
+                if not files:
+                    continue
+                pick = files[len(files) // 2]
             try:
-                pil_img = self._Image.open(files[len(files) // 2]).convert("RGB")
+                pil_img = self._Image.open(pick).convert("RGB")
                 self._photos[tid]      = self._ImageTk.PhotoImage(
                     pil_img.resize((self.W, self.H), self._Image.LANCZOS))
                 self._chip_photos[tid] = self._ImageTk.PhotoImage(
@@ -1533,9 +1542,14 @@ class MainWindow:
             self._ev.clear()
             self._ctrl.set_status(f"Err: {r1.error_msg[:28]}", DANGER)
         else:
+            n = len(r1.hand_tiles)
             self._hand.update(r1.hand_tiles, r1.shanten)
-            self._ev.update_phase1(r1.effective_tiles, r1.shanten)
-            self._ctrl.set_status(f"EV… [{r1.game_mode}]", WARN)
+            if n == 14:
+                self._ev.update_phase1(r1.effective_tiles, r1.shanten)
+                self._ctrl.set_status(f"EV… [{r1.game_mode}]", WARN)
+            else:
+                self._ev.clear()
+                self._ctrl.set_status(f"手牌 {n}/14 [{r1.game_mode}]", MUTED)
             # Update live view detection boxes
             if self._crop:
                 self._live.update_detections(r1.hand_tiles, self._crop)

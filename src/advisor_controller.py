@@ -166,7 +166,7 @@ class AnalysisWorker(threading.Thread):
                 effective_tiles=effs, warnings=warnings,
                 game_mode=mode, timestamp=time.time(), capture_ok=True))
 
-            if len(state._hand) >= 13:
+            if len(hand_tiles) == 14:
                 doras = state.dora_tiles()
                 t0 = time.time()
                 ev_results = compute_simple_ev(
