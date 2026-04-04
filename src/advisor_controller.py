@@ -25,7 +25,7 @@ import numpy as np
 from .ev_engine      import compute_simple_ev
 from .frame_smoother import ConfirmedTile
 from .game_state     import GameState
-from .mahjong_advisor import MahjongAdvisor, run_detection, ROI_4P
+from .mahjong_advisor import MahjongAdvisor, run_detection, run_hand_detection, ROI_4P
 from .mahjong_engine  import effective_tiles, shanten
 from .screen_capture  import ScreenCapture
 from .tile_codec      import name_to_tile
@@ -93,36 +93,54 @@ class AnalysisWorker(threading.Thread):
             if signal == "STOP":
                 break
             if isinstance(signal, tuple) and signal[0] == "ANALYZE":
-                self._do_analysis(signal[1], signal[2], signal[3])
+                self._do_analysis(signal[1], signal[2], signal[3], signal[4], signal[5])
 
-    def _do_analysis(self, ox: int, oy: int, n_sims: int):
+    def _do_analysis(self, x: int, y: int, w: int, h: int, n_sims: int):
         try:
-            # Absolute-coord crop → always capture full primary monitor.
-            if ox > 0 or oy > 0:
-                raw = self._capture.capture_fullscreen()
+            if w > 0 and h > 0:
+                # Hand-strip mode: user selected the hand tile region on screen.
+                # Capture full screen at native resolution (no resize!) then crop.
+                raw = self._capture.capture_fullscreen_raw()
+                if not ScreenCapture.is_valid_frame(raw):
+                    self._phase1_q.put(Phase1Result(
+                        hand_tiles=[], shanten=99, effective_tiles=[],
+                        warnings=[], game_mode="4p",
+                        timestamp=time.time(), capture_ok=False,
+                        error_msg="Black frame — check capture permissions"))
+                    return
+                h_raw, w_raw = raw.shape[:2]
+                # If tkinter logical coords differ from physical (DPI scaling),
+                # scale coordinates to match the captured frame dimensions.
+                sx = w_raw / self._capture._screen_w
+                sy = h_raw / self._capture._screen_h
+                px  = int(x * sx);  py  = int(y * sy)
+                pw  = int(w * sx);  ph  = int(h * sy)
+                hand_crop = raw[py : min(py + ph, h_raw), px : min(px + pw, w_raw)]
+                if hand_crop.size == 0:
+                    self._phase1_q.put(Phase1Result(
+                        hand_tiles=[], shanten=99, effective_tiles=[],
+                        warnings=[], game_mode="4p",
+                        timestamp=time.time(), capture_ok=False,
+                        error_msg="Empty crop — region out of screen bounds"))
+                    return
+                self._last_img = hand_crop.copy()
+                dets, mode = run_hand_detection(
+                    self._advisor.model, hand_crop, x, y, w, h)
             else:
+                # Full-screen mode: no region selected, capture and detect normally.
                 raw = self._capture.capture()
+                if not ScreenCapture.is_valid_frame(raw):
+                    self._phase1_q.put(Phase1Result(
+                        hand_tiles=[], shanten=99, effective_tiles=[],
+                        warnings=[], game_mode="4p",
+                        timestamp=time.time(), capture_ok=False,
+                        error_msg="Black frame — check capture permissions"))
+                    return
+                self._last_img = raw.copy()
+                if raw.shape[:2] != (837, 1418):
+                    raw = cv2.resize(raw, (1418, 837))
+                dets, mode = run_detection(self._advisor.model, raw)
 
-            if not ScreenCapture.is_valid_frame(raw):
-                self._phase1_q.put(Phase1Result(
-                    hand_tiles=[], shanten=99, effective_tiles=[],
-                    warnings=[], game_mode="4p",
-                    timestamp=time.time(), capture_ok=False,
-                    error_msg="Black frame — open ⚙ and click Save Frame to debug"))
-                return
-
-            h_raw, w_raw = raw.shape[:2]
-            if ox > 0 or oy > 0:
-                img = raw[oy : min(oy + 837, h_raw), ox : min(ox + 1418, w_raw)]
-            else:
-                img = raw
-
-            self._last_img = img.copy()
-
-            if img.shape[:2] != (837, 1418):
-                img = cv2.resize(img, (1418, 837))
-
-            dets, mode = run_detection(self._advisor.model, img)
             smoother   = self._advisor.smoother
             for _ in range(smoother.min_hits):
                 smoother.update(dets)
@@ -240,7 +258,7 @@ class AdvisorController:
 
         self._auto_after_id  = None
         self._auto_interval  = 5000
-        self._auto_crop:  Tuple[int, int] = (0, 0)
+        self._auto_crop:  Tuple[int, int, int, int] = (0, 0, 0, 0)
         self._auto_n_sims: int = 0
 
         self._worker = AnalysisWorker(
@@ -269,14 +287,16 @@ class AdvisorController:
 
     # ── Analysis ──────────────────────────────────────────────────────────────
 
-    def trigger(self, crop: Tuple[int, int] = (0, 0), n_sims: int = 0) -> bool:
+    def trigger(self, crop: Tuple[int, int, int, int] = (0, 0, 0, 0),
+                n_sims: int = 0) -> bool:
         """
         Enqueue an analysis request.
+        crop = (x, y, w, h) of the hand region in screen coords; (0,0,0,0) = full screen.
         Returns True if accepted, False if worker is still busy with previous request.
         """
-        ox, oy = crop
+        x, y, w, h = crop
         try:
-            self._trigger_q.put_nowait(("ANALYZE", ox, oy, n_sims))
+            self._trigger_q.put_nowait(("ANALYZE", x, y, w, h, n_sims))
             return True
         except queue.Full:
             return False
@@ -284,7 +304,8 @@ class AdvisorController:
     # ── Auto mode ─────────────────────────────────────────────────────────────
 
     def set_auto(self, enabled: bool, interval_ms: int = 5000,
-                 crop: Tuple[int, int] = (0, 0), n_sims: int = 0) -> None:
+                 crop: Tuple[int, int, int, int] = (0, 0, 0, 0),
+                 n_sims: int = 0) -> None:
         if self._auto_after_id:
             self._root.after_cancel(self._auto_after_id)
             self._auto_after_id = None
@@ -411,6 +432,24 @@ class AdvisorController:
         out_path = out_dir / "debug_capture.png"
         cv2.imwrite(str(out_path), disp)
         return out_path
+
+    def switch_model(self, model_path: Path) -> None:
+        """Hot-swap the YOLO model: stop current worker, start a new one."""
+        # Drain any pending trigger and stop the current worker
+        try:
+            self._trigger_q.get_nowait()
+        except queue.Empty:
+            pass
+        try:
+            self._trigger_q.put_nowait("STOP")
+        except queue.Full:
+            pass
+        # New queue + worker with the new model
+        self._trigger_q = queue.Queue(maxsize=1)
+        self._worker = AnalysisWorker(
+            self._trigger_q, self._phase1_q, self._phase2_q,
+            self._capture, model_path)
+        self._worker.start()
 
     # ── Internal polling ──────────────────────────────────────────────────────
 

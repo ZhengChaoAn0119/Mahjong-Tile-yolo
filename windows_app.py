@@ -38,8 +38,8 @@ from src.frame_smoother     import ConfirmedTile
 from src.advisor_controller import AdvisorController, Phase1Result, Phase2Result
 
 # ── Window ────────────────────────────────────────────────────────────────────
-WINDOW_W = 420
-WINDOW_H = 900
+WINDOW_W = 560
+WINDOW_H = 920
 
 # ── Color palette ─────────────────────────────────────────────────────────────
 BG       = "#12121f"
@@ -108,21 +108,31 @@ class TileImageCache:
         return img
 
     def _preload_all(self):
+        # tile_crops/{mid}/ is indexed by MODEL class ID (alphabetical), not tile ID.
+        # Must map: model_class_id → tile_id via MODEL_TO_TILE before storing.
+        from src.tile_codec import MODEL_TO_TILE as _M2T
+        # Initialise fallbacks for every tile ID first
         for tid in range(N_TILES):
-            pil_img = None
-            folder  = self._crops_dir / str(tid)
-            files   = sorted(folder.iterdir()) if folder.is_dir() else []
-            if files:
-                try:
-                    pil_img = self._Image.open(files[len(files) // 2]).convert("RGB")
-                except Exception:
-                    pass
-            if pil_img is None:
-                pil_img = self._make_fallback(tid, self.W, self.H)
+            fb = self._make_fallback(tid, self.W, self.H)
             self._photos[tid]      = self._ImageTk.PhotoImage(
-                pil_img.resize((self.W, self.H), self._Image.LANCZOS))
+                fb.resize((self.W, self.H), self._Image.LANCZOS))
             self._chip_photos[tid] = self._ImageTk.PhotoImage(
-                pil_img.resize((self.CW, self.CH), self._Image.LANCZOS))
+                fb.resize((self.CW, self.CH), self._Image.LANCZOS))
+        # Overwrite with real crops where available (folder = model class id)
+        for mid in range(len(_M2T)):
+            tid    = int(_M2T[mid])
+            folder = self._crops_dir / str(mid)
+            files  = sorted(folder.iterdir()) if folder.is_dir() else []
+            if not files:
+                continue
+            try:
+                pil_img = self._Image.open(files[len(files) // 2]).convert("RGB")
+                self._photos[tid]      = self._ImageTk.PhotoImage(
+                    pil_img.resize((self.W, self.H), self._Image.LANCZOS))
+                self._chip_photos[tid] = self._ImageTk.PhotoImage(
+                    pil_img.resize((self.CW, self.CH), self._Image.LANCZOS))
+            except Exception:
+                pass
 
     def get(self, tid: int):
         return self._photos.get(tid)
@@ -188,17 +198,20 @@ class PreviewThread(threading.Thread):
 # LiveViewPanel  — canvas showing captured region + detection overlay
 # ─────────────────────────────────────────────────────────────────────────────
 
-LIVE_W = WINDOW_W - 8
-LIVE_H = 200
+LIVE_W    = WINDOW_W - 8
+LIVE_H_DEFAULT = 80   # shown before region is selected
+LIVE_H_MIN     = 40
+LIVE_H_MAX     = 160
 
 class LiveViewPanel(tk.Frame):
     def __init__(self, parent, **kw):
         super().__init__(parent, bg=BG, **kw)
-        self._canvas = tk.Canvas(self, width=LIVE_W, height=LIVE_H,
+        self._live_h = LIVE_H_DEFAULT
+        self._canvas = tk.Canvas(self, width=LIVE_W, height=self._live_h,
                                  bg=SKEL, highlightthickness=0)
         self._canvas.pack()
         self._canvas.create_text(
-            LIVE_W // 2, LIVE_H // 2,
+            LIVE_W // 2, self._live_h // 2,
             text="Click  ⊞ Select Region  to start live view",
             fill=MUTED, font=("Consolas", 9), tags="placeholder")
 
@@ -211,13 +224,22 @@ class LiveViewPanel(tk.Frame):
         self._scale_y:    float    = 1.0
         self._poll_id     = None
 
+    def _set_canvas_height(self, h: int):
+        """Resize canvas widget to h pixels."""
+        self._live_h = h
+        self._canvas.config(height=h)
+
     def set_region(self, x: int, y: int, w: int, h: int):
         """Called after user drags a region; starts live capture."""
         if self._preview_thread:
             self._preview_thread.stop()
-        self._region   = (x, y, w, h)
-        self._scale_x  = LIVE_W / w
-        self._scale_y  = LIVE_H / h
+        self._region = (x, y, w, h)
+        # Compute canvas height that preserves aspect ratio (no stretching)
+        aspect   = w / max(h, 1)
+        canvas_h = max(LIVE_H_MIN, min(LIVE_H_MAX, int(LIVE_W / aspect)))
+        self._set_canvas_height(canvas_h)
+        self._scale_x = LIVE_W / w
+        self._scale_y = canvas_h / h
         self._preview_q = queue.Queue(maxsize=1)
         self._preview_thread = PreviewThread((x, y, w, h), self._preview_q)
         self._preview_thread.start()
@@ -230,7 +252,7 @@ class LiveViewPanel(tk.Frame):
     def _poll_frame(self):
         try:
             pil_img = self._preview_q.get_nowait()
-            pil_img = pil_img.resize((LIVE_W, LIVE_H))
+            pil_img = pil_img.resize((LIVE_W, self._live_h))
             try:
                 from PIL import ImageTk
                 self._tk_img = ImageTk.PhotoImage(pil_img)
@@ -253,7 +275,7 @@ class LiveViewPanel(tk.Frame):
             return
         rx, ry, rw, rh = region
         sx = LIVE_W / rw
-        sy = LIVE_H / rh
+        sy = self._live_h / rh
         self._det_boxes = []
         for ct in hand_tiles:
             x1, y1, x2, y2 = ct.xyxy
@@ -316,10 +338,10 @@ class RegionSelector(tk.Toplevel):
 
         cx, cy = sw // 2, sh // 2
         self._cv.create_text(cx, cy - 60,
-                             text="拖曳框選遊戲畫面或手牌區域",
+                             text="拖曳框選手牌區域（14張牌的橫條）",
                              fill="white", font=("Consolas", 18, "bold"))
         self._cv.create_text(cx, cy - 30,
-                             text="Drag to select game window or hand area",
+                             text="Drag to select the hand tiles strip",
                              fill="#aaaaaa", font=("Consolas", 12))
         self._cv.create_text(cx, cy,
                              text="[Esc] 取消", fill=MUTED,
@@ -999,31 +1021,43 @@ class MeldPanel(tk.Frame):
 # DiscardPanel  — collapsible 34×4 visual grid
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Tile layout: Man(0-8), Pin(9-17), Sou(18-26), Honours(27-33)
-# Group offsets on canvas with small gaps between suits
-_CELL_W    = 11   # px per tile column
-_CELL_H    = 10   # px per copy row
-_HDR_H     = 14   # header row height (tile name)
-_GAP       = 3    # px gap between suit groups
-_SUIT_COLS = [9, 9, 9, 7]   # man, pin, sou, honours
+# Tile layout: Man(0-8), Pin(9-17), Sou(18-26), Winds(27-30), Dragons(31-33)
+_CELL_W   = 15   # px per tile column
+_CELL_H   = 11   # px per copy row
+_BAND_H   = 11   # coloured suit-name band height
+_NUM_H    = 13   # tile number / honour label row height
+_HDR_H    = _BAND_H + _NUM_H
+_GAP      = 6    # px gap between suit groups
+_HON_GAP  = 4    # extra gap between winds and dragons
+
+# (first_tid, count, display_label, band_bg, text_fg)
+_SUIT_GROUPS = [
+    ( 0, 9, "萬", "#3d1800", "#ffa040"),
+    ( 9, 9, "筒", "#0d2d0d", "#60c060"),
+    (18, 9, "索", "#0a1e30", "#5ab0f0"),
+    (27, 4, "風", "#1a1a38", "#9898ff"),
+    (31, 3, "龍", "#2d0f0f", "#ff8080"),
+]
+
+_HON_LABEL = {27:"東", 28:"南", 29:"西", 30:"北",
+              31:"白", 32:"發", 33:"中"}
+_HON_COLOR = {27:"#9898ff", 28:"#9898ff", 29:"#9898ff", 30:"#9898ff",
+              31:"#e0e0e0", 32:"#60c060",  33:"#ef5350"}
 
 def _tid_to_canvas_x(tid: int) -> int:
     """Return left-edge x for tile tid in the discard canvas."""
-    if tid < 9:
-        return tid * _CELL_W
-    elif tid < 18:
-        return 9 * _CELL_W + _GAP + (tid - 9) * _CELL_W
-    elif tid < 27:
-        return 18 * _CELL_W + 2 * _GAP + (tid - 18) * _CELL_W
-    else:
-        return 27 * _CELL_W + 3 * _GAP + (tid - 27) * _CELL_W
+    if tid < 9:    return tid * _CELL_W
+    elif tid < 18: return 9  * _CELL_W + _GAP     + (tid - 9)  * _CELL_W
+    elif tid < 27: return 18 * _CELL_W + 2*_GAP   + (tid - 18) * _CELL_W
+    elif tid < 31: return 27 * _CELL_W + 3*_GAP   + (tid - 27) * _CELL_W
+    else:          return 31 * _CELL_W + 3*_GAP + _HON_GAP + (tid - 31) * _CELL_W
 
-_CANVAS_W = 27 * _CELL_W + 3 * _GAP + 7 * _CELL_W  # ≈ 360 px
-_CANVAS_H = _HDR_H + 4 * _CELL_H + 2
+_CANVAS_W  = _tid_to_canvas_x(33) + _CELL_W
+_CANVAS_H  = _HDR_H + 4 * _CELL_H + 2
 
-_DISC_FILL   = "#3a5a7a"   # filled (discarded)
-_DISC_EMPTY  = "#1e2a3a"   # unfilled
-_DISC_OVER   = "#ef5350"   # over-limit highlight
+_DISC_FILL  = "#3a5a7a"   # filled (discarded)
+_DISC_EMPTY = "#1e2a3a"   # unfilled
+_DISC_OVER  = "#ef5350"   # over-limit highlight
 
 
 class DiscardPanel(tk.Frame):
@@ -1077,27 +1111,40 @@ class DiscardPanel(tk.Frame):
 
     def _draw_grid(self):
         self._cv.delete("all")
+        # ── Suit band row ─────────────────────────────────────────────────────
+        for (start, count, label, band_bg, band_fg) in _SUIT_GROUPS:
+            x1 = _tid_to_canvas_x(start)
+            x2 = _tid_to_canvas_x(start + count - 1) + _CELL_W
+            self._cv.create_rectangle(x1, 0, x2, _BAND_H - 1,
+                                      fill=band_bg, outline="")
+            self._cv.create_text((x1 + x2) // 2, _BAND_H // 2,
+                                 text=label, fill=band_fg,
+                                 font=("Consolas", 7, "bold"), anchor="center")
+        # ── Tile number / honour label row ────────────────────────────────────
         for tid in range(N_TILES):
             cx = _tid_to_canvas_x(tid)
-            name = tile_name(tid)
-            # Tile name header
-            color = _suit_fg(name)
-            self._cv.create_text(cx + _CELL_W // 2, _HDR_H // 2,
-                                 text=name[:-1] if len(name) > 1 else name,
-                                 fill=color, font=("Consolas", 6),
+            if tid >= 27:
+                text  = _HON_LABEL[tid]
+                color = _HON_COLOR[tid]
+                font  = ("Consolas", 8)
+            else:
+                text  = str(tid % 9 + 1)
+                color = _suit_fg(tile_name(tid))
+                font  = ("Consolas", 8, "bold")
+            self._cv.create_text(cx + _CELL_W // 2,
+                                 _BAND_H + _NUM_H // 2,
+                                 text=text, fill=color, font=font,
                                  anchor="center")
+        # ── Count cells ───────────────────────────────────────────────────────
+        for tid in range(N_TILES):
+            cx    = _tid_to_canvas_x(tid)
             count = int(self._counts[tid])
             for row in range(4):
-                y1 = _HDR_H + row * _CELL_H
-                y2 = y1 + _CELL_H - 1
-                filled = row < count
-                over   = count > 4
-                if over:
-                    fill = DANGER
-                elif filled:
-                    fill = _DISC_FILL
-                else:
-                    fill = _DISC_EMPTY
+                y1   = _HDR_H + row * _CELL_H
+                y2   = y1 + _CELL_H - 1
+                over = count > 4
+                fill = (DANGER if over else
+                        _DISC_FILL if row < count else _DISC_EMPTY)
                 self._cv.create_rectangle(
                     cx + 1, y1 + 1, cx + _CELL_W - 1, y2,
                     fill=fill, outline="", tags=f"cell_{tid}_{row}")
@@ -1177,12 +1224,16 @@ class DiscardPanel(tk.Frame):
 
 class ControlPanel(tk.Frame):
     def __init__(self, parent, on_analyze: Callable,
-                 on_auto_toggle: Callable, on_save_frame: Callable,
-                 on_select_region: Callable, **kw):
+                 on_auto_toggle: Callable,
+                 on_select_region: Callable,
+                 on_model_change: Callable,
+                 model_list: List[str],
+                 current_model: str = "", **kw):
         super().__init__(parent, bg=PANEL, **kw)
         self.auto_var     = tk.BooleanVar(value=False)
         self.interval_var = tk.IntVar(value=5)
         self.sims_var     = tk.IntVar(value=0)
+        self._model_var   = tk.StringVar(value=current_model)
 
         main_row = tk.Frame(self, bg=PANEL)
         main_row.pack(fill="x", padx=6, pady=4)
@@ -1224,15 +1275,12 @@ class ControlPanel(tk.Frame):
         tk.Button(r1, text="⊞ Select Region", bg=ACCENT, fg=SAFE,
                   font=("Consolas", 9, "bold"), relief="flat", padx=6, pady=3,
                   command=on_select_region).pack(side="left")
-        tk.Button(r1, text="Save Frame", bg="#152a1a", fg=SAFE,
-                  font=("Consolas", 8), relief="flat",
-                  command=on_save_frame).pack(side="left", padx=(8, 0))
         self._region_lbl = tk.Label(r1, text="(not set)", bg=PANEL, fg=MUTED,
                                     font=("Consolas", 7))
         self._region_lbl.pack(side="left", padx=6)
 
         r2 = tk.Frame(d, bg=PANEL)
-        r2.pack(fill="x", padx=6, pady=(0, 4))
+        r2.pack(fill="x", padx=6, pady=(0, 2))
         tk.Label(r2, text="Interval:", bg=PANEL, fg=MUTED,
                  font=("Consolas", 8)).pack(side="left")
         ttk.Combobox(r2, textvariable=self.interval_var,
@@ -1240,6 +1288,17 @@ class ControlPanel(tk.Frame):
                      state="readonly").pack(side="left", padx=2)
         tk.Label(r2, text="s", bg=PANEL, fg=MUTED,
                  font=("Consolas", 8)).pack(side="left")
+
+        r3 = tk.Frame(d, bg=PANEL)
+        r3.pack(fill="x", padx=6, pady=(0, 4))
+        tk.Label(r3, text="Model:", bg=PANEL, fg=MUTED,
+                 font=("Consolas", 8)).pack(side="left")
+        self._model_cb = ttk.Combobox(r3, textvariable=self._model_var,
+                                      values=model_list, width=26,
+                                      state="readonly")
+        self._model_cb.pack(side="left", padx=(4, 0))
+        self._model_cb.bind("<<ComboboxSelected>>",
+                            lambda e: on_model_change(self._model_var.get()))
 
     def _toggle_drawer(self):
         if self._drawer_open:
@@ -1277,6 +1336,12 @@ class ControlPanel(tk.Frame):
         except tk.TclError:
             pass
 
+    def set_model(self, name: str):
+        try:
+            self._model_var.set(name)
+        except tk.TclError:
+            pass
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MainWindow  — View orchestrator
@@ -1298,6 +1363,14 @@ class MainWindow:
         self._cache    = TileImageCache(self.CROPS_DIR)
         self._last_p1: Optional[Phase1Result] = None
         self._crop:    Optional[Tuple[int, int, int, int]] = None  # (x,y,w,h)
+
+        # Scan available models (best.pt only, named by experiment folder)
+        self._model_map: Dict[str, Path] = {}
+        for pt in sorted((PROJECT_ROOT / "runs" / "detect").glob("*/weights/best.pt")):
+            self._model_map[pt.parent.parent.name] = pt
+        self._model_list = list(self._model_map.keys())
+        self._current_model_name = self.MODEL_PATH.parent.parent.name \
+            if self.MODEL_PATH.parent.name == "weights" else self.MODEL_PATH.stem
 
         self._build_panels()
 
@@ -1386,15 +1459,17 @@ class MainWindow:
         self._ctrl = ControlPanel(main,
                                   on_analyze=self._trigger_analysis,
                                   on_auto_toggle=self._toggle_auto,
-                                  on_save_frame=self._save_debug_frame,
-                                  on_select_region=self._on_select_region)
+                                  on_select_region=self._on_select_region,
+                                  on_model_change=self._on_model_change,
+                                  model_list=self._model_list,
+                                  current_model=self._current_model_name)
         self._ctrl.pack(fill="x")
 
     # ── User actions → controller ─────────────────────────────────────────────
 
     def _trigger_analysis(self):
-        ox, oy = (self._crop[0], self._crop[1]) if self._crop else (0, 0)
-        if self._advisor.trigger(crop=(ox, oy)):
+        crop = self._crop if self._crop else (0, 0, 0, 0)
+        if self._advisor.trigger(crop=crop):
             self._ctrl.set_status("Detecting…", SAFE)
             self._ctrl.pulse()
             self._hand.set_skeleton()
@@ -1402,9 +1477,9 @@ class MainWindow:
 
     def _toggle_auto(self):
         enabled = self._ctrl.auto_var.get()
-        ox, oy  = (self._crop[0], self._crop[1]) if self._crop else (0, 0)
+        crop    = self._crop if self._crop else (0, 0, 0, 0)
         ms      = self._ctrl.get_interval() * 1000
-        self._advisor.set_auto(enabled, interval_ms=ms, crop=(ox, oy))
+        self._advisor.set_auto(enabled, interval_ms=ms, crop=crop)
         self._ctrl.set_status("Auto ON" if enabled else "Auto OFF",
                               SAFE if enabled else MUTED)
 
@@ -1502,24 +1577,15 @@ class MainWindow:
 
         RegionSelector(self.root, on_select, on_cancel)
 
-    def _save_debug_frame(self):
-        ox, oy = (self._crop[0], self._crop[1]) if self._crop else (0, 0)
-        if self._advisor.has_last_img:
-            self._finish_debug_save(ox, oy)
-        else:
-            self.root.withdraw()
-            self.root.update()
-            self.root.after(150, lambda: self._finish_debug_save(ox, oy))
-
-    def _finish_debug_save(self, ox: int, oy: int):
-        try:
-            path = self._advisor.save_debug_frame(
-                self.DEBUG_DIR, crop=(ox, oy))
-            self._ctrl.set_status(f"Saved {path.name}", SAFE)
-        except Exception as e:
-            self._ctrl.set_status(f"Cap err: {e}", DANGER)
-        finally:
-            self.root.deiconify()
+    def _on_model_change(self, model_name: str):
+        pt = self._model_map.get(model_name)
+        if pt is None:
+            return
+        self._ctrl.set_status(f"Loading {model_name}…", WARN)
+        self.root.update_idletasks()
+        self._advisor.switch_model(pt)
+        self._current_model_name = model_name
+        self._ctrl.set_status(f"Model: {model_name}", SAFE)
 
     # ── Close ─────────────────────────────────────────────────────────────────
 

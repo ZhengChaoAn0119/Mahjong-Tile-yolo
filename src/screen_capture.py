@@ -37,6 +37,15 @@ class ScreenCapture:
         # Set initial mode to reflect what will actually be used
         if self._mss_ok:
             self._mode = "mss"
+        # Logical screen dimensions (used to compute DPI scale factor).
+        # Read via Win32 so they match tkinter's coordinate space.
+        try:
+            import ctypes
+            self._screen_w = ctypes.windll.user32.GetSystemMetrics(0)  # SM_CXSCREEN
+            self._screen_h = ctypes.windll.user32.GetSystemMetrics(1)  # SM_CYSCREEN
+        except Exception:
+            self._screen_w = 1920
+            self._screen_h = 1080
 
     # ── Initialisation ────────────────────────────────────────────────────────
 
@@ -172,6 +181,22 @@ class ScreenCapture:
         self._mode = "pil"
         return img
 
+    def capture_fullscreen_raw(self) -> np.ndarray:
+        """
+        Capture the full primary monitor at **native resolution** (no resize).
+        Used when the user has set a manual crop region — caller crops by
+        screen coordinates into the returned array.
+        """
+        if self._mss_ok:
+            sct     = self._get_sct()
+            monitor = sct.monitors[1]  # primary monitor
+            bgra    = np.array(sct.grab(monitor), dtype=np.uint8)
+            return bgra[:, :, :3]      # BGRA → BGR, native resolution, no resize
+        from PIL import ImageGrab
+        pil_img = ImageGrab.grab()
+        img = np.array(pil_img, dtype=np.uint8)
+        return cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+
     def capture_fullscreen(self) -> np.ndarray:
         """
         Always capture the full primary monitor (for absolute crop offsets).
@@ -191,4 +216,4 @@ class ScreenCapture:
     def get_status(self) -> str:
         """Human-readable capture mode string for the status bar."""
         window_str = "window" if self._hwnd else "fullscreen"
-        return f"{self._mode} | {window_str}"
+        return f"{self._mode} | {window_str} | logical={self._screen_w}x{self._screen_h}"

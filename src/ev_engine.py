@@ -242,7 +242,7 @@ def compute_simple_ev(
         fu    = calculate_fu(h_after, melds, -1, False, is_open, seat_wind, round_wind)
         score = estimate_score(han, fu)
 
-        simple_ev = score * eff_count / (new_shan + 1)
+        simple_ev = score * eff_count / max(new_shan + 1, 1)
 
         results.append({
             "discard_tid":  discard_tid,

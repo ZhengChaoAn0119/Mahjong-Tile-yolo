@@ -100,6 +100,41 @@ def detect_game_mode(img) -> str:
     return "3p" if cv2.cvtColor(top, cv2.COLOR_BGR2GRAY).std() < 28 else "4p"
 
 
+# Hand-strip model dimensions (ROI_4P hand: x1=90,y1=693,x2=1330,y2=837)
+HAND_MODEL_W = 1240
+HAND_MODEL_H = 144
+
+
+def run_hand_detection(model, hand_bgr,
+                        screen_x: int, screen_y: int,
+                        screen_w: int, screen_h: int):
+    """
+    Detect hand tiles from a hand-strip BGR crop (any screen size).
+    Resizes the crop to HAND_MODEL_W × HAND_MODEL_H, runs inference,
+    then maps bounding-box coords back to screen space.
+    Returns (List[RawDetection], "4p").
+    """
+    resized  = cv2.resize(hand_bgr, (HAND_MODEL_W, HAND_MODEL_H))
+    gray     = _gray(resized)
+    r        = model(gray, conf=CONF_THRESH, iou=IOU_THRESH, verbose=False)[0]
+    scale_x  = screen_w / HAND_MODEL_W
+    scale_y  = screen_h / HAND_MODEL_H
+    dets: List[RawDetection] = []
+    for b in r.boxes:
+        mid  = int(b.cls[0])
+        tid  = int(MODEL_TO_TILE[mid])
+        mx1  = int(b.xyxy[0][0]); my1 = int(b.xyxy[0][1])
+        mx2  = int(b.xyxy[0][2]); my2 = int(b.xyxy[0][3])
+        xyxy = (screen_x + int(mx1 * scale_x),
+                screen_y + int(my1 * scale_y),
+                screen_x + int(mx2 * scale_x),
+                screen_y + int(my2 * scale_y))
+        dets.append(RawDetection(tile_id=tid, model_cid=mid,
+                                  conf=float(b.conf[0]),
+                                  xyxy=xyxy, zone="hand"))
+    return dets, "4p"
+
+
 def run_detection(model, img) -> List[RawDetection]:
     mode = detect_game_mode(img)
     rois = ROI_3P if mode == "3p" else ROI_4P
