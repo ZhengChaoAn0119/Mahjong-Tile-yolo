@@ -96,8 +96,9 @@ def train_phase1(data_yaml: Path) -> Path:
     model.train(
         data          = str(data_yaml),
         epochs        = 20,
-        imgsz         = 640,
-        batch         = 32,
+        imgsz         = 1024,        # 高解析度：每牌 ~73×109px（vs 46×70px@640）
+        rect          = True,        # 矩形訓練，避免手牌條狀圖極端 letterbox 浪費
+        batch         = 16,          # imgsz=1024 顯存需求較大
         device        = 0,
         amp           = True,
         freeze        = 10,          # 凍結 backbone layers 0-9
@@ -111,12 +112,11 @@ def train_phase1(data_yaml: Path) -> Path:
         warmup_bias_lr   = 0.1,
         close_mosaic  = 5,
         patience      = 20,
-        max_det       = 20,          # 手牌最多14張，設20保留餘裕
-        # 牌面不翻轉、色調不偏移
+        max_det       = 20,
         hsv_h=0.0, hsv_s=0.0, hsv_v=0.15,
-        degrees=2.0, translate=0.03, scale=0.15,
+        degrees=2.0, translate=0.03, scale=0.3,   # 提高尺度變化，應對實際遊戲尺度差異
         flipud=0.0, fliplr=0.0,
-        mosaic=0.0,                  # 關閉 mosaic（手牌條狀圖不適合）
+        mosaic=0.0,
         mixup=0.0, copy_paste=0.0,
         project      = str(RUNS_DIR),
         name         = "majsoul_hand_phase1",
@@ -146,11 +146,12 @@ def train_phase2(phase1_ckpt: Path, data_yaml: Path) -> Path:
     results = model.train(
         data          = str(data_yaml),
         epochs        = 100,
-        imgsz         = 640,
-        batch         = 32,
+        imgsz         = 1024,
+        rect          = True,
+        batch         = 16,
         device        = 0,
         amp           = True,
-        freeze        = None,        # 解凍所有層
+        freeze        = None,
         optimizer     = "SGD",
         lr0           = 0.005,
         lrf           = 0.01,
@@ -164,7 +165,7 @@ def train_phase2(phase1_ckpt: Path, data_yaml: Path) -> Path:
         patience      = 40,
         max_det       = 20,
         hsv_h=0.0, hsv_s=0.0, hsv_v=0.15,
-        degrees=2.0, translate=0.03, scale=0.15,
+        degrees=2.0, translate=0.03, scale=0.3,
         flipud=0.0, fliplr=0.0,
         mosaic=0.0,
         mixup=0.0, copy_paste=0.0,
@@ -202,8 +203,9 @@ def fine_tune(ckpt: Path, data_yaml: Path,
     results = model.train(
         data          = str(data_yaml),
         epochs        = epochs,
-        imgsz         = 640,
-        batch         = 32,
+        imgsz         = 1024,
+        rect          = True,
+        batch         = 16,
         device        = 0,
         amp           = True,
         freeze        = None,
@@ -218,7 +220,7 @@ def fine_tune(ckpt: Path, data_yaml: Path,
         patience      = 30,
         max_det       = 20,
         hsv_h=0.0, hsv_s=0.0, hsv_v=0.15,
-        degrees=2.0, translate=0.03, scale=0.15,
+        degrees=2.0, translate=0.03, scale=0.3,
         flipud=0.0, fliplr=0.0,
         mosaic=0.0, mixup=0.0, copy_paste=0.0,
         project      = str(RUNS_DIR),

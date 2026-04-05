@@ -26,7 +26,8 @@ from .ev_engine      import compute_simple_ev
 from .frame_smoother import ConfirmedTile
 from .game_state     import GameState
 from .mahjong_advisor import MahjongAdvisor, run_detection, run_hand_detection, ROI_4P
-from .mahjong_engine  import effective_tiles, shanten
+from .mahjong_engine  import (effective_tiles, shanten,
+                               detect_yaku, calculate_fu, estimate_score)
 from .screen_capture  import ScreenCapture
 from .tile_codec      import name_to_tile
 
@@ -47,6 +48,7 @@ class Phase1Result:
     timestamp:       float
     capture_ok:      bool
     error_msg:       str = ""
+    agari_info:      Optional[Dict] = None   # set when shanten == -1
 
 
 @dataclass
@@ -125,7 +127,7 @@ class AnalysisWorker(threading.Thread):
                     return
                 self._last_img = hand_crop.copy()
                 dets, mode = run_hand_detection(
-                    self._advisor.model, hand_crop, x, y, w, h)
+                    self._advisor.hand_model, hand_crop, x, y, w, h)
             else:
                 # Full-screen mode: no region selected, capture and detect normally.
                 raw = self._capture.capture()
@@ -161,12 +163,33 @@ class AnalysisWorker(threading.Thread):
             s         = int(shanten(hand34))
             effs      = effective_tiles(hand34, remaining)
 
+            agari_info = None
+            if s == -1 and len(hand_tiles) == 14:
+                # Hand is complete — compute yaku/score instead of EV
+                doras = state.dora_tiles()
+                # Drawn tile is the 14th tile (highest cx after sort)
+                sorted_by_cx = sorted(hand_tiles, key=lambda t: t.cx)
+                winning_tile = sorted_by_cx[-1].tile_id if sorted_by_cx else 0
+                yaku = detect_yaku(
+                    hand34, state.melds, is_tsumo=True,
+                    seat_wind=state.seat_wind, round_wind=state.round_wind,
+                    dora_tiles=doras)
+                han  = sum(h for _, h in yaku if isinstance(h, int))
+                fu   = calculate_fu(
+                    hand34, state.melds, winning_tile,
+                    is_tsumo=True, is_open=bool(state.melds),
+                    seat_wind=state.seat_wind, round_wind=state.round_wind)
+                score = estimate_score(han, fu)
+                agari_info = {"yaku": yaku, "han": han, "fu": fu,
+                              "score": score, "winning_tile": winning_tile}
+
             self._phase1_q.put(Phase1Result(
                 hand_tiles=hand_tiles, shanten=s,
                 effective_tiles=effs, warnings=warnings,
-                game_mode=mode, timestamp=time.time(), capture_ok=True))
+                game_mode=mode, timestamp=time.time(), capture_ok=True,
+                agari_info=agari_info))
 
-            if len(hand_tiles) == 14:
+            if s != -1 and len(hand_tiles) == 14:
                 doras = state.dora_tiles()
                 t0 = time.time()
                 ev_results = compute_simple_ev(

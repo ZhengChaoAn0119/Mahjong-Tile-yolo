@@ -16,14 +16,21 @@ from .frame_smoother import FrameSmoother, RawDetection
 from .game_state     import GameState
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-PROJECT_ROOT = Path("E:/project/majsoul_yolo")
-MODEL_PATH   = PROJECT_ROOT / "runs/detect/majsoul_confused_boost/weights/best.pt"
+PROJECT_ROOT    = Path("E:/project/majsoul_yolo")
+MODEL_PATH      = PROJECT_ROOT / "runs/detect/majsoul_confused_boost/weights/best.pt"
+HAND_MODEL_PATH = PROJECT_ROOT / "runs/detect/majsoul_hand_phase2/weights/best.pt"
 
 # ── Detection parameters ──────────────────────────────────────────────────────
 W, H        = 1418, 837
 CONF_THRESH = 0.28
 IOU_THRESH  = 0.35
 CONF_WARN   = 0.45
+
+# ── Hand-strip inference parameters ──────────────────────────────────────────
+HAND_CONF_LEVELS  = [0.20, 0.10, 0.05, 0.02]  # adaptive conf for 13 hand tiles
+DRAWN_CONF_THRESH = 0.35   # drawn tile (14th) must exceed this; else treat as empty slot
+HAND_IOU          = 0.30
+HAND_IMGSZ        = 1024
 
 # ── ROI definitions ───────────────────────────────────────────────────────────
 ROI_4P = dict(
@@ -100,27 +107,60 @@ def detect_game_mode(img) -> str:
     return "3p" if cv2.cvtColor(top, cv2.COLOR_BGR2GRAY).std() < 28 else "4p"
 
 
-# Hand-strip model dimensions (ROI_4P hand: x1=90,y1=693,x2=1330,y2=837)
-HAND_MODEL_W = 1240
-HAND_MODEL_H = 144
-
-
-def run_hand_detection(model, hand_bgr,
+def run_hand_detection(hand_model, hand_bgr,
                         screen_x: int, screen_y: int,
                         screen_w: int, screen_h: int):
     """
-    Detect hand tiles from a hand-strip BGR crop (any screen size).
-    Resizes the crop to HAND_MODEL_W × HAND_MODEL_H, runs inference,
-    then maps bounding-box coords back to screen space.
+    Detect 13+1 hand tiles from a hand-strip BGR crop.
+
+    Two-phase strategy:
+      Phase A — 13 hand tiles: adaptive confidence (HAND_CONF_LEVELS) ensures
+                all 13 are found even at low confidence.
+      Phase B — drawn tile (14th): only accepted when conf >= DRAWN_CONF_THRESH
+                AND it is to the right of the 13 hand tiles.  If the slot shows
+                table background (桌布) or no tile is held, it is excluded.
+
     Returns (List[RawDetection], "4p").
     """
-    resized  = cv2.resize(hand_bgr, (HAND_MODEL_W, HAND_MODEL_H))
-    gray     = _gray(resized)
-    r        = model(gray, conf=CONF_THRESH, iou=IOU_THRESH, verbose=False)[0]
-    scale_x  = screen_w / HAND_MODEL_W
-    scale_y  = screen_h / HAND_MODEL_H
+    # Single inference at the lowest threshold to capture all candidates at once.
+    r_all       = hand_model(hand_bgr, imgsz=HAND_IMGSZ, conf=HAND_CONF_LEVELS[-1],
+                             iou=HAND_IOU, max_det=20, verbose=False)[0]
+    all_sorted  = sorted(r_all.boxes, key=lambda b: float(b.xywh[0][0]))  # left → right
+
+    # ── Phase A: collect 13 hand tiles ───────────────────────────────────────
+    hand_boxes: list = []
+    for conf_thr in HAND_CONF_LEVELS:
+        candidates = [b for b in all_sorted if float(b.conf[0]) >= conf_thr]
+        if len(candidates) >= 13:
+            hand_boxes = candidates[:13]   # leftmost 13
+            break
+    if not hand_boxes:
+        hand_boxes = all_sorted[:min(13, len(all_sorted))]  # best-effort
+
+    # ── Phase B: validate drawn tile ─────────────────────────────────────────
+    drawn_box = None
+    if len(hand_boxes) == 13:
+        rightmost_cx = float(hand_boxes[-1].xywh[0][0])
+        # Drawn tile must be: (1) to the right of all 13 hand tiles,
+        #                     (2) confidence >= DRAWN_CONF_THRESH
+        drawn_candidates = [
+            b for b in all_sorted
+            if b not in hand_boxes
+            and float(b.xywh[0][0]) > rightmost_cx
+            and float(b.conf[0]) >= DRAWN_CONF_THRESH
+        ]
+        if drawn_candidates:
+            drawn_box = drawn_candidates[0]   # take the leftmost valid candidate
+
+    final_boxes = hand_boxes + ([drawn_box] if drawn_box else [])
+
+    # ── Map to screen coordinates ─────────────────────────────────────────────
+    h_img, w_img = hand_bgr.shape[:2]
+    scale_x = screen_w / w_img
+    scale_y = screen_h / h_img
+
     dets: List[RawDetection] = []
-    for b in r.boxes:
+    for b in final_boxes:
         mid  = int(b.cls[0])
         tid  = int(MODEL_TO_TILE[mid])
         mx1  = int(b.xyxy[0][0]); my1 = int(b.xyxy[0][1])
@@ -151,7 +191,11 @@ def run_detection(model, img) -> List[RawDetection]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class MahjongAdvisor:
-    def __init__(self, model_path: Path = MODEL_PATH):
-        self.model    = YOLO(str(model_path))
-        self.smoother = FrameSmoother(window=6, min_hits=3)
-        self.state    = GameState(seat_wind=0, round_wind=0)
+    def __init__(self, model_path: Path = MODEL_PATH,
+                 hand_model_path: Path = HAND_MODEL_PATH):
+        self.model      = YOLO(str(model_path))
+        # Hand model: dedicated 13+1 strip detector (may fall back to main model)
+        _hmp = hand_model_path if hand_model_path.exists() else model_path
+        self.hand_model = YOLO(str(_hmp))
+        self.smoother   = FrameSmoother(window=6, min_hits=3)
+        self.state      = GameState(seat_wind=0, round_wind=0)

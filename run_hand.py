@@ -24,12 +24,24 @@ from train_hand import (
 )
 
 # ── Pipeline parameters ────────────────────────────────────────────────────────
-INIT_IMGS   = 500    # 最少初始圖數
+INIT_IMGS   = 1000   # 初始圖數（提高到1000，預先補足難類別）
 MAP_TARGET  = 0.90   # mAP50 達標閾值
 AP_WEAK_THR = 0.80   # 個別 class AP50 低於此 → 弱類別
 BOOST_MULT  = 3.0    # 弱類別生成機率倍數
 INCR_IMGS   = 500    # 每輪補充張數
 MAX_ITER    = 3      # 最大擴增輪數
+
+# 初始資料生成就預先 boost 視覺相似的難類別
+INITIAL_BOOST: dict[int, float] = {
+    17: 4.0,  # 6s — 外觀和 8s 極相似（矩形竹節，只差數量）
+    20: 4.0,  # 7s — 常辨識失敗
+    23: 4.0,  # 8s — 常辨識失敗
+    26: 4.0,  # 9s — 常辨識失敗
+    16: 2.0,  # 6p — 筒子高段也相似
+    19: 2.0,  # 7p
+    22: 2.0,  # 8p
+    25: 2.0,  # 9p
+}
 
 
 # ── Evaluation ────────────────────────────────────────────────────────────────
@@ -42,8 +54,9 @@ def evaluate(model_path: Path, data_yaml: Path) -> tuple[float, dict[int, float]
     model   = YOLO(str(model_path))
     metrics = model.val(
         data    = str(data_yaml),
-        imgsz   = 640,
-        batch   = 32,
+        imgsz   = 1024,
+        rect    = True,
+        batch   = 16,
         conf    = 0.001,
         iou     = 0.6,
         max_det = 20,
@@ -81,8 +94,9 @@ def main():
     n_existing = len(list(HAND_IMGS.glob("*.jpg")))
     if n_existing < INIT_IMGS:
         need = INIT_IMGS - n_existing
-        print(f"\n[data] Only {n_existing} images found, generating {need} more...")
-        generate(need)
+        print(f"\n[data] Only {n_existing} images found, generating {need} more "
+              f"(with hard-class boost)...")
+        generate(need, class_weights=INITIAL_BOOST)
         n_existing = len(list(HAND_IMGS.glob("*.jpg")))
     print(f"\n[data] Total images available: {n_existing}")
 

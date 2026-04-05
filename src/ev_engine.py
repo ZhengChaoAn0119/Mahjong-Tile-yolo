@@ -142,6 +142,19 @@ def compute_discard_ev(
     results = []
     is_open = len(melds) > 0
 
+    # First pass: find minimum achievable shanten to avoid recommending backwards discards
+    min_shan_after = 99
+    seen_pre: set = set()
+    for discard_tid in range(N_TILES):
+        if hand34[discard_tid] == 0 or discard_tid in seen_pre:
+            continue
+        seen_pre.add(discard_tid)
+        h_tmp = hand34.copy()
+        h_tmp[discard_tid] -= 1
+        s = int(shanten(h_tmp))
+        if s < min_shan_after:
+            min_shan_after = s
+
     # Deduplicate discards (same tile type counts once)
     seen_types = set()
     for discard_tid in range(N_TILES):
@@ -155,6 +168,8 @@ def compute_discard_ev(
         h_after[discard_tid] -= 1
 
         new_shan = int(shanten(h_after))
+        if new_shan > min_shan_after:
+            continue
 
         # Effective tiles of resulting hand
         effs      = effective_tiles(h_after, remaining34)
@@ -222,6 +237,20 @@ def compute_simple_ev(
     is_open  = len(melds) > 0
     rem_total = int(remaining34.sum())
 
+    # First pass: find the minimum achievable shanten after any discard.
+    # We must never recommend a discard that worsens shanten relative to the best option.
+    min_shan_after = 99
+    seen_types_pre: set = set()
+    for discard_tid in range(N_TILES):
+        if hand34[discard_tid] == 0 or discard_tid in seen_types_pre:
+            continue
+        seen_types_pre.add(discard_tid)
+        h_tmp = hand34.copy()
+        h_tmp[discard_tid] -= 1
+        s = int(shanten(h_tmp))
+        if s < min_shan_after:
+            min_shan_after = s
+
     seen_types: set = set()
     for discard_tid in range(N_TILES):
         if hand34[discard_tid] == 0:
@@ -234,6 +263,10 @@ def compute_simple_ev(
         h_after[discard_tid] -= 1
 
         new_shan  = int(shanten(h_after))
+        # Skip discards that worsen shanten compared to the best achievable
+        if new_shan > min_shan_after:
+            continue
+
         effs      = effective_tiles(h_after, remaining34)
         eff_count = sum(c for _, c in effs)
 

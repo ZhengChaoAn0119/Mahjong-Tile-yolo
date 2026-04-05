@@ -53,6 +53,7 @@ WARN     = "#ff9800"
 WARN_DIM = "#7a4800"
 DANGER   = "#ef5350"
 BEST     = "#00e676"
+GOLD     = "#ffd700"
 TEXT     = "#dce3f0"
 MUTED    = "#6b7394"
 SKEL     = "#252a42"
@@ -542,10 +543,12 @@ class HandPanel(tk.Frame):
         count = len(sorted_tiles)
         self._hand_lbl.config(text=f"HAND  ({count})", fg=MUTED)
 
-        if s <= -1 or s == 0:
+        if s == -1:
             self._shan_lbl.config(
-                text="TENPAI" if s == 0 else "TENPAI!",
-                fg=SAFE, font=("Consolas", 10, "bold"))
+                text="和牌!", fg=GOLD, font=("Consolas", 10, "bold"))
+        elif s == 0:
+            self._shan_lbl.config(
+                text="聽牌", fg=SAFE, font=("Consolas", 10, "bold"))
         elif s == 1:
             self._shan_lbl.config(text=f"向聴 {s}", fg=WARN,
                                   font=("Consolas", 10, "bold"))
@@ -749,6 +752,35 @@ class EVPanel(tk.Frame):
 
     def update_phase1(self, effs: List[Tuple[int, int]], s: int):
         self._update_eff_chips(effs)
+
+    def update_agari(self, agari_info: Dict):
+        """Display agari (winning hand) result instead of EV discard advice."""
+        self._stop_skel_shimmer()
+        self._progress.stop()
+        self._progress.config(mode="determinate", value=100)
+        self._status_var.set("和牌!")
+
+        han   = agari_info.get("han", 0)
+        fu    = agari_info.get("fu", 0)
+        score = agari_info.get("score", 0)
+        yaku  = agari_info.get("yaku", [])
+
+        self._r1_name.config(text="和牌!", fg=GOLD)
+        self._r1_ev.config(text=f"≈{score}", fg=GOLD)
+        self._r1_shan.config(text=f"{han}han {fu}fu", fg=MUTED)
+
+        yaku_str = "  ".join(f"{n}({h})" for n, h in yaku
+                             if isinstance(h, int) and h > 0)
+        self._r1_yaku.config(text=yaku_str if yaku_str else "役なし(立直?)")
+
+        # Clear eff chips and compact cards — not relevant for agari
+        for w in self._eff_frame.winfo_children():
+            if w is not self._eff_count_lbl:
+                w.destroy()
+        self._eff_count_lbl.config(text="")
+        for card in (self._card2, self._card3):
+            for k in ("name", "ev", "eff", "shan"):
+                card._widgets[k].config(text="—", fg=MUTED)
 
     def update(self, ev_results: List[Dict], is_mc: bool, dt: float):
         self._stop_skel_shimmer()
@@ -1544,7 +1576,10 @@ class MainWindow:
         else:
             n = len(r1.hand_tiles)
             self._hand.update(r1.hand_tiles, r1.shanten)
-            if n == 14:
+            if r1.shanten == -1 and r1.agari_info:
+                self._ev.update_agari(r1.agari_info)
+                self._ctrl.set_status(f"和牌! [{r1.game_mode}]", GOLD)
+            elif n == 14:
                 self._ev.update_phase1(r1.effective_tiles, r1.shanten)
                 self._ctrl.set_status(f"EV… [{r1.game_mode}]", WARN)
             else:
@@ -1559,6 +1594,9 @@ class MainWindow:
                 self._discard.refresh(snap["discards_arr"])
 
     def _handle_phase2(self, r2: Phase2Result):
+        # If last Phase1 was an agari, skip updating EV panel (agari display takes priority)
+        if self._last_p1 and self._last_p1.shanten == -1 and self._last_p1.agari_info:
+            return
         self._ev.update(r2.ev_results, r2.is_mc, r2.compute_time)
         if r2.ev_results and self._last_p1 and self._last_p1.capture_ok:
             best_tid = r2.ev_results[0]["discard_tid"]

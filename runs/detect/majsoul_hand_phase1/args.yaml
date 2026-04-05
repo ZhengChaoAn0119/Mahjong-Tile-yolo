@@ -5,8 +5,8 @@ data: E:\project\majsoul_yolo\dataset_hand\data.yaml
 epochs: 20
 time: null
 patience: 20
-batch: 32
-imgsz: 640
+batch: 16
+imgsz: 1024
 save: true
 save_period: -1
 cache: false
@@ -21,7 +21,7 @@ verbose: true
 seed: 42
 deterministic: true
 single_cls: false
-rect: false
+rect: true
 cos_lr: false
 close_mosaic: 5
 resume: false
@@ -91,7 +91,7 @@ hsv_s: 0.0
 hsv_v: 0.15
 degrees: 2.0
 translate: 0.03
-scale: 0.15
+scale: 0.3
 shear: 0.0
 perspective: 0.0
 flipud: 0.0
