@@ -59,7 +59,7 @@ MUTED    = "#6b7394"
 SKEL     = "#252a42"
 SKEL2    = "#2e3450"
 
-SUIT_COLOR = {"m": "#ffa040", "p": "#60c060", "s": "#5ab0f0"}
+SUIT_COLOR = {"m": "#ffa040", "p": "#5ab0f0", "s": "#60c060"}
 
 def _suit_fg(name: str) -> str:
     return SUIT_COLOR.get(name[-1], TEXT) if name and len(name) >= 2 else TEXT
@@ -91,7 +91,7 @@ class TileImageCache:
     def _make_fallback(self, tid: int, w: int, h: int):
         name = tile_name(tid)
         suit = name[-1] if len(name) >= 2 else "?"
-        bg_map = {"m": (80, 40, 10), "p": (20, 60, 20), "s": (15, 45, 80)}
+        bg_map = {"m": (80, 40, 10), "p": (15, 45, 80), "s": (20, 60, 20)}
         bg  = bg_map.get(suit, (40, 30, 70))
         img = self._Image.new("RGB", (w, h), bg)
         d   = self._ImageDraw.Draw(img)
@@ -1074,8 +1074,8 @@ _HON_GAP  = 4    # extra gap between winds and dragons
 # (first_tid, count, display_label, band_bg, text_fg)
 _SUIT_GROUPS = [
     ( 0, 9, "萬", "#3d1800", "#ffa040"),
-    ( 9, 9, "筒", "#0d2d0d", "#60c060"),
-    (18, 9, "索", "#0a1e30", "#5ab0f0"),
+    ( 9, 9, "筒", "#0a1e30", "#5ab0f0"),
+    (18, 9, "索", "#0d2d0d", "#60c060"),
     (27, 4, "風", "#1a1a38", "#9898ff"),
     (31, 3, "龍", "#2d0f0f", "#ff8080"),
 ]

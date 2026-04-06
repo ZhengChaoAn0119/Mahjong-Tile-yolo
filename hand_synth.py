@@ -31,6 +31,9 @@ MODEL_NAMES = [
 N_CLASSES = len(MODEL_NAMES)  # 34
 N_SLOTS   = 14                # 13 hand tiles + 1 drawn tile
 
+DORA_CLASSES     = {12, 13, 14}  # 5m, 5p, 5s — each has regular + red variant
+DORA_PROBABILITY = 0.25          # 1-in-4 red five, matching real deck composition
+
 
 # ── Slot detection ────────────────────────────────────────────────────────────
 
@@ -145,24 +148,42 @@ def detect_slots(template_rgba: np.ndarray) -> list[tuple[int, int, int, int]]:
 
 # ── Tile image loader ─────────────────────────────────────────────────────────
 
-def load_tile_images() -> dict[int, np.ndarray]:
-    """Load all 34 tile images (RGBA) from tile_images/{cls_id}/*.png."""
-    tile_imgs: dict[int, np.ndarray] = {}
+def load_tile_images() -> dict[int, list[np.ndarray]]:
+    """Load all tile variant images (RGBA) from tile_images/{cls_id}/*.png.
+
+    Returns a dict mapping class_id → list of variant images.
+    Most classes have one variant; 5m/5p/5s (12/13/14) have two: [regular, dora].
+    """
+    tile_imgs: dict[int, list[np.ndarray]] = {}
     for cls_id in range(N_CLASSES):
         d = TILE_DIR / str(cls_id)
         pngs = sorted(d.glob("*.png"))
         if not pngs:
             raise FileNotFoundError(f"No PNG in {d}")
-        img = cv2.imread(str(pngs[0]), cv2.IMREAD_UNCHANGED)
-        if img is None:
-            raise RuntimeError(f"Failed to read {pngs[0]}")
-        # Ensure 4 channels
-        if img.ndim == 2:
-            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGRA)
-        elif img.shape[2] == 3:
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2BGRA)
-        tile_imgs[cls_id] = img
+        variants = []
+        for p in pngs:
+            img = cv2.imread(str(p), cv2.IMREAD_UNCHANGED)
+            if img is None:
+                raise RuntimeError(f"Failed to read {p}")
+            if img.ndim == 2:
+                img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGRA)
+            elif img.shape[2] == 3:
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2BGRA)
+            variants.append(img)
+        tile_imgs[cls_id] = variants
     return tile_imgs
+
+
+def select_tile_image(variants: list[np.ndarray], cls_id: int) -> np.ndarray:
+    """Pick one variant image for the given class.
+
+    Dora classes (5m/5p/5s) randomly select between regular and red variant
+    with DORA_PROBABILITY chance of the dora tile.
+    """
+    if cls_id not in DORA_CLASSES or len(variants) == 1:
+        return variants[0]
+    # variants[0] = regular, variants[1] = dora (_r)
+    return random.choices(variants, weights=[1.0 - DORA_PROBABILITY, DORA_PROBABILITY], k=1)[0]
 
 
 # ── Alpha-composite a tile onto canvas ───────────────────────────────────────
@@ -245,7 +266,7 @@ def generate(n: int, class_weights: dict | None = None) -> None:
         labels  = []
 
         for (x1, y1, x2, y2), cls_id in zip(slots, classes):
-            paste_tile(canvas, tile_imgs[cls_id], x1, y1, x2, y2)
+            paste_tile(canvas, select_tile_image(tile_imgs[cls_id], cls_id), x1, y1, x2, y2)
             cx = (x1 + x2) / 2 / W
             cy = (y1 + y2) / 2 / H
             w  = (x2 - x1) / W
