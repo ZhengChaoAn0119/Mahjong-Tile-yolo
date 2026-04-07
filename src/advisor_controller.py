@@ -59,6 +59,16 @@ class Phase2Result:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# EV cache helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _ev_cache_key(hand34, remaining34, melds, seat_wind, round_wind, doras):
+    melds_key = tuple(sorted((m.kind, tuple(sorted(m.tiles))) for m in melds))
+    return (tuple(hand34), tuple(remaining34), melds_key,
+            tuple(sorted(doras)), seat_wind, round_wind)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # AnalysisWorker  — background detection + EV thread
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -74,6 +84,9 @@ class AnalysisWorker(threading.Thread):
         self._model_path = model_path
         self._advisor: Optional[MahjongAdvisor] = None
         self._last_img:  Optional[np.ndarray]   = None
+        self._ev_cache:   dict           = {}
+        self._cache_lock: threading.Lock = threading.Lock()
+        self._precomp_q:  queue.Queue    = queue.Queue(maxsize=1)
 
     @property
     def last_img(self) -> Optional[np.ndarray]:
@@ -87,9 +100,13 @@ class AnalysisWorker(threading.Thread):
         if self._advisor:
             self._advisor.state   = GameState(seat_wind=0, round_wind=0)
             self._advisor.smoother.reset()
+        with self._cache_lock:
+            self._ev_cache.clear()
 
     def run(self):
         self._advisor = MahjongAdvisor(model_path=self._model_path)
+        threading.Thread(target=self._precompute_loop,
+                         daemon=True, name="PrecomputeWorker").start()
         while True:
             signal = self._trigger_q.get()
             if signal == "STOP":
@@ -189,13 +206,34 @@ class AnalysisWorker(threading.Thread):
                 game_mode=mode, timestamp=time.time(), capture_ok=True,
                 agari_info=agari_info))
 
+            # While waiting for a draw (13 tiles), kick off background
+            # pre-computation for all possible drawn tiles.
+            if s != -1 and len(hand_tiles) == 13:
+                snap = (
+                    hand34.copy(), remaining.copy(),
+                    list(state.melds),
+                    state.seat_wind, state.round_wind,
+                    state.dora_tiles(),
+                )
+                try:
+                    self._precomp_q.put_nowait(snap)
+                except queue.Full:
+                    pass  # Previous precompute still running; drop stale job
+
             if s != -1 and len(hand_tiles) == 14:
                 doras = state.dora_tiles()
-                t0 = time.time()
-                ev_results = compute_simple_ev(
-                    hand34, remaining, state.melds,
-                    state.seat_wind, state.round_wind, doras)
-                dt = time.time() - t0
+                key   = _ev_cache_key(hand34, remaining, state.melds,
+                                      state.seat_wind, state.round_wind, doras)
+                with self._cache_lock:
+                    cached = self._ev_cache.get(key)
+                if cached is not None:
+                    ev_results, dt = cached, 0.0
+                else:
+                    t0 = time.time()
+                    ev_results = compute_simple_ev(
+                        hand34, remaining, state.melds,
+                        state.seat_wind, state.round_wind, doras)
+                    dt = time.time() - t0
             else:
                 ev_results, dt = [], 0.0
 
@@ -211,6 +249,40 @@ class AnalysisWorker(threading.Thread):
                 warnings=[], game_mode="4p",
                 timestamp=time.time(), capture_ok=False,
                 error_msg=f"{type(e).__name__}: {e}"))
+
+    def _precompute_loop(self) -> None:
+        """Pre-compute EV for all possible drawn tiles while waiting for a draw.
+
+        Runs in a dedicated daemon thread. Blocks on _precomp_q; each job is a
+        snapshot of the 13-tile game state. Computes compute_simple_ev() for
+        every drawable tile and stores results in _ev_cache so Phase2 can serve
+        them instantly without re-computing.
+        """
+        while True:
+            try:
+                hand34, remaining, melds, seat_wind, round_wind, doras = \
+                    self._precomp_q.get()
+            except Exception:
+                continue
+
+            results: dict = {}
+            for draw_tid in range(34):
+                if remaining[draw_tid] <= 0:
+                    continue
+                h14 = hand34.copy();    h14[draw_tid] += 1
+                r14 = remaining.copy(); r14[draw_tid] -= 1
+                if shanten(h14) == -1:
+                    continue  # Would be agari — no EV advice needed
+                try:
+                    ev = compute_simple_ev(h14, r14, melds,
+                                           seat_wind, round_wind, doras)
+                except Exception:
+                    continue
+                key = _ev_cache_key(h14, r14, melds, seat_wind, round_wind, doras)
+                results[key] = ev
+
+            with self._cache_lock:
+                self._ev_cache.update(results)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

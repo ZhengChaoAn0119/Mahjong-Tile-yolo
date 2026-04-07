@@ -481,10 +481,10 @@ class HandPanel(tk.Frame):
         hdr = tk.Frame(self, bg=PANEL)
         hdr.pack(fill="x", padx=6, pady=(5, 2))
         self._hand_lbl = tk.Label(hdr, text="HAND", bg=PANEL, fg=MUTED,
-                                  font=("Consolas", 8, "bold"))
+                                  font=("Consolas", 8, "bold"), width=11, anchor="w")
         self._hand_lbl.pack(side="left")
         self._shan_lbl = tk.Label(hdr, text="", bg=PANEL, fg=TEXT,
-                                  font=("Consolas", 10, "bold"))
+                                  font=("Consolas", 10, "bold"), width=8, anchor="e")
         self._shan_lbl.pack(side="right")
 
         self._strip = tk.Frame(self, bg=PANEL)
@@ -643,10 +643,10 @@ class EVPanel(tk.Frame):
                                   font=("Consolas", 14, "bold"), width=5)
         self._r1_name.pack(side="left")
         self._r1_ev    = tk.Label(card1_top, text="", bg=CARD, fg=SAFE,
-                                  font=("Consolas", 10))
+                                  font=("Consolas", 10), width=10, anchor="w")
         self._r1_ev.pack(side="left", padx=6)
         self._r1_shan  = tk.Label(card1_top, text="", bg=CARD, fg=MUTED,
-                                  font=("Consolas", 8))
+                                  font=("Consolas", 8), width=12, anchor="e")
         self._r1_shan.pack(side="right")
 
         self._eff_frame = tk.Frame(self._card1, bg=CARD)
@@ -694,13 +694,13 @@ class EVPanel(tk.Frame):
         bot = tk.Frame(f, bg=CARD)
         bot.pack(fill="x")
         widgets["ev"]  = tk.Label(bot, text="", bg=CARD, fg=MUTED,
-                                  font=("Consolas", 8))
+                                  font=("Consolas", 8), width=9, anchor="w")
         widgets["ev"].pack(side="left")
         widgets["eff"] = tk.Label(bot, text="", bg=CARD, fg=MUTED,
-                                  font=("Consolas", 8))
+                                  font=("Consolas", 8), width=7, anchor="w")
         widgets["eff"].pack(side="left", padx=4)
         widgets["shan"] = tk.Label(bot, text="", bg=CARD, fg=MUTED,
-                                   font=("Consolas", 8))
+                                   font=("Consolas", 8), width=5, anchor="e")
         widgets["shan"].pack(side="right")
         f._widgets = widgets
         return f
@@ -1296,7 +1296,7 @@ class ControlPanel(tk.Frame):
                              font=("Consolas", 16))
         self._dot.pack(side="right")
         self._status_lbl = tk.Label(main_row, text="Ready", bg=PANEL,
-                                    fg=MUTED, font=("Consolas", 8))
+                                    fg=MUTED, font=("Consolas", 8), width=18, anchor="w")
         self._status_lbl.pack(side="right", padx=4)
 
         self._drawer_open = False
