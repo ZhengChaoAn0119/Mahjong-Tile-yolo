@@ -84,9 +84,11 @@ class AnalysisWorker(threading.Thread):
         self._model_path = model_path
         self._advisor: Optional[MahjongAdvisor] = None
         self._last_img:  Optional[np.ndarray]   = None
-        self._ev_cache:   dict           = {}
-        self._cache_lock: threading.Lock = threading.Lock()
-        self._precomp_q:  queue.Queue    = queue.Queue(maxsize=1)
+        self._ev_cache:      dict           = {}
+        self._cache_lock:    threading.Lock = threading.Lock()
+        self._precomp_q:     queue.Queue    = queue.Queue(maxsize=1)
+        self._precomp_busy:  threading.Event = threading.Event()  # set while batch is running
+        self._last_precomp_hand: Optional[tuple] = None           # hand34 of last submitted job
 
     @property
     def last_img(self) -> Optional[np.ndarray]:
@@ -102,6 +104,7 @@ class AnalysisWorker(threading.Thread):
             self._advisor.smoother.reset()
         with self._cache_lock:
             self._ev_cache.clear()
+        self._last_precomp_hand = None
 
     def run(self):
         self._advisor = MahjongAdvisor(model_path=self._model_path)
@@ -207,18 +210,23 @@ class AnalysisWorker(threading.Thread):
                 agari_info=agari_info))
 
             # While waiting for a draw (13 tiles), kick off background
-            # pre-computation for all possible drawn tiles.
+            # pre-computation for all possible drawn tiles — but only once
+            # per unique 13-tile hand to avoid continuous CPU load.
             if s != -1 and len(hand_tiles) == 13:
-                snap = (
-                    hand34.copy(), remaining.copy(),
-                    list(state.melds),
-                    state.seat_wind, state.round_wind,
-                    state.dora_tiles(),
-                )
-                try:
-                    self._precomp_q.put_nowait(snap)
-                except queue.Full:
-                    pass  # Previous precompute still running; drop stale job
+                hand_key = tuple(hand34)
+                if (hand_key != self._last_precomp_hand
+                        and not self._precomp_busy.is_set()):
+                    self._last_precomp_hand = hand_key
+                    snap = (
+                        hand34.copy(), remaining.copy(),
+                        list(state.melds),
+                        state.seat_wind, state.round_wind,
+                        state.dora_tiles(),
+                    )
+                    try:
+                        self._precomp_q.put_nowait(snap)
+                    except queue.Full:
+                        pass
 
             if s != -1 and len(hand_tiles) == 14:
                 doras = state.dora_tiles()
@@ -253,10 +261,9 @@ class AnalysisWorker(threading.Thread):
     def _precompute_loop(self) -> None:
         """Pre-compute EV for all possible drawn tiles while waiting for a draw.
 
-        Runs in a dedicated daemon thread. Blocks on _precomp_q; each job is a
-        snapshot of the 13-tile game state. Computes compute_simple_ev() for
-        every drawable tile and stores results in _ev_cache so Phase2 can serve
-        them instantly without re-computing.
+        Runs in a dedicated daemon thread. Only one batch runs at a time
+        (_precomp_busy flag). A 100 ms sleep between iterations yields the GIL
+        so the UI thread and AnalysisWorker are never starved.
         """
         while True:
             try:
@@ -265,24 +272,34 @@ class AnalysisWorker(threading.Thread):
             except Exception:
                 continue
 
-            results: dict = {}
-            for draw_tid in range(34):
-                if remaining[draw_tid] <= 0:
-                    continue
-                h14 = hand34.copy();    h14[draw_tid] += 1
-                r14 = remaining.copy(); r14[draw_tid] -= 1
-                if shanten(h14) == -1:
-                    continue  # Would be agari — no EV advice needed
-                try:
-                    ev = compute_simple_ev(h14, r14, melds,
-                                           seat_wind, round_wind, doras)
-                except Exception:
-                    continue
-                key = _ev_cache_key(h14, r14, melds, seat_wind, round_wind, doras)
-                results[key] = ev
+            self._precomp_busy.set()
+            try:
+                results: dict = {}
+                for draw_tid in range(34):
+                    if remaining[draw_tid] <= 0:
+                        continue
+                    h14 = hand34.copy();    h14[draw_tid] += 1
+                    r14 = remaining.copy(); r14[draw_tid] -= 1
+                    if shanten(h14) == -1:
+                        continue  # Would be agari — no EV advice needed
+                    try:
+                        ev = compute_simple_ev(h14, r14, melds,
+                                               seat_wind, round_wind, doras)
+                    except Exception:
+                        continue
+                    key = _ev_cache_key(h14, r14, melds, seat_wind, round_wind, doras)
+                    results[key] = ev
 
-            with self._cache_lock:
-                self._ev_cache.update(results)
+                    # 100 ms sleep between iterations: yields GIL so UI stays responsive.
+                    # Total batch time ≈ 34 × (compute + 100 ms) ≈ 3–5 s, well within
+                    # the time other players take to discard.
+                    time.sleep(0.1)
+
+                if results:
+                    with self._cache_lock:
+                        self._ev_cache.update(results)
+            finally:
+                self._precomp_busy.clear()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
