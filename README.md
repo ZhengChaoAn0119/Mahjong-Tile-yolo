@@ -85,6 +85,10 @@ python windows_app.py
 - 按 **F9** 截圖並分析，或勾選 **Auto** 開啟定時分析
 - 若需指定手牌區域，點擊 ⚙ 設定選取區域
 
+![demo_01](image/dezwv-l6801.gif)
+
+![demo_02](image/4e96n-mmurf.gif)
+
 ---
 
 ### 訓練手牌模型（選用）
